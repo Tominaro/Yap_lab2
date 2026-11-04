@@ -12,6 +12,35 @@
 //#pragma comment (lib, "<libname>") для диалогового окна
 
 //память и отслеживание ее утечки
+//-------------------------------------new
+//int timer;
+LARGE_INTEGER timer;
+const char *timed_c[]={"insert","select","delete","update","uniq"};
+//float
+double sec[5]={0};//commands for each actiona
+unsigned long long ccalls[5]={0};//calls for each action
+double timer_new(void){
+    //int integer1;
+    /*// Gets the current number of ticks from QueryPerformanceCounter. Throws an
+// exception if the call to QueryPerformanceCounter fails.
+static inline int64_t GetTicks()
+{
+    LARGE_INTEGER ticks;
+    if (!QueryPerformanceCounter(&ticks))
+    {
+        winrt::throw_last_error();
+    }
+    return ticks.QuadPart;
+}*/
+    LARGE_INTEGER ticks;
+    if (!QueryPerformanceCounter(&ticks))
+    {
+        //winrt::throw_last_error(); C++ only
+        exit(EXIT_FAILURE);
+    }
+    return (double)ticks.QuadPart/(double)timer.QuadPart;
+}
+//-------------------------------------new end
 static long malloc_cntv = 0;
 static long calloc_cntv = 0;
 static long realloc_cntv = 0;
@@ -1016,7 +1045,18 @@ static void process_line(DB *db, const char *line)
     }
 
     int ok = 0;
-    const char *cmd = tk_vgae[0];
+    const char *cmd = tk_vgae[0];// napominaniye //tk_vgae[1] = field list, tk_vgae[2..] = conditions
+    //(!parse_condition(tk_vgae[start+i], &conds[parsed])) -- free parsed
+    //new
+    int timer_field=(-1);
+    for(int i=0;i<5;i++){
+        if(strcmp(cmd,timed_c[i])==0){
+            timer_field=i;
+            break;
+            }
+        }
+    double start_command=timer_new();
+    //new end
 
     if (strcmp(cmd, "insert") == 0) {
         if (ntok < 2) ok = 0;
@@ -1060,7 +1100,14 @@ static void process_line(DB *db, const char *line)
     else{
         ok= 0;
     }
-
+    //new
+    double command_proshlo=timer_new()-start_command;
+    if(timer_field>=0){
+        sec[timer_field]=sec[timer_field]+command_proshlo;
+        ccalls[timer_field]++;
+        }
+    
+    //new end
     if (!ok){
         out("--!!incorrect %s\n",err_prefix);
     }
@@ -1119,6 +1166,18 @@ static long brkgf2_getline(char **lineptr, size_t *n, FILE *stream) {
 
 int main(int argc, char *argv[])
 {
+    //new
+    //ElapsedMicroseconds.QuadPart *= 1000000;
+    //ElapsedMicroseconds.QuadPart /= Frequency.QuadPart;
+    //if (!QueryPerformanceCounter(&timer))
+    if (!QueryPerformanceFrequency(&timer))
+    {
+        //winrt::throw_last_error();C++ only
+        return 1;
+    }
+    double summ_start=timer_new();
+    //new end
+    
     //SetConsoleOutputCP(1251);
     //SetConsoleCP(1251);
     //setlocale(LC_ALL, "Russian");
@@ -1169,6 +1228,24 @@ int main(int argc, char *argv[])
     }else{
         printf("\n--De four ms falte3--\n");
     }
-
+    
+    //new
+    double summ_of_secc=timer_new()-summ_start;
+    //fprintf(stderr,"ouput failed to open\n");//stderr-тип данных для ошибок
+    fprintf(stderr,"\n\ntotal time:\n");
+    for(int i=0;i<5;i++){
+        double ms_summ=sec[i]*1000;
+        double ms_averaga;
+        if(ccalls[i]!=0){
+            ms_averaga=ms_summ/(double)ccalls[i];
+        }else{
+            ms_averaga=0;
+        }
+        // fprintf(fp, "%-10s | ID: %04d | Р—Р°СЂРїР»Р°С‚Р°: %10.2f СЂСѓР±.\n", name, id, salary);
+        fprintf(stderr,"%-10s %10llu %14.3f %14.6f\n",timed_c[i],ccalls[i],ms_summ,ms_averaga);
+        
+    }
+    fprintf(stderr, "summ time: %.3f ms\n",summ_of_secc*1000);
+    //new end
     return 0;
 }
