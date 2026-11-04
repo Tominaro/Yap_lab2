@@ -567,7 +567,12 @@ static int parse_condition(const char *s,Condition *cond)
         return parse_double(v, &cond->dbl_val);
     case FIELD_KERN_TM:
     case FIELD_FILE_TM:
-        return parse_time(v, &cond->time_val);
+        //return parse_time(v, &cond->time_val);
+        if(!parse_time(v,&cond->time_val)){
+            return 0;
+        }
+        cond->int_val=time_conv(cond->time_val);
+        return 1;
     case FIELD_STATUS:
         return parse_status(v, &cond->status_val);
     case FIELD_NAME:
@@ -606,8 +611,30 @@ static int cond_match(const Condition *c, const re2cord *r)
     case FIELD_PID:      cmp = (r->pid      < c->int_val) ? -1 : (r->pid      > c->int_val) ? 1 : 0; break;
     case FIELD_PRIORITY: cmp = (r->priority < c->int_val) ? -1 : (r->priority > c->int_val) ? 1 : 0; break;
     case FIELD_CPU_USAGE: cmp = (r->cpu_usage < c->dbl_val) ? -1 : (r->cpu_usage > c->dbl_val) ? 1 : 0; break;
-    case FIELD_KERN_TM: { int a=time_conv(r->kern_tm), b=time_conv(c->time_val); cmp=(a<b)?-1:(a>b)?1:0; break; }
-    case FIELD_FILE_TM: { int a=time_conv(r->file_tm),  b=time_conv(c->time_val); cmp=(a<b)?-1:(a>b)?1:0; break; }
+    //case FIELD_KERN_TM: { int a=time_conv(r->kern_tm), b=time_conv(c->time_val); cmp=(a<b)?-1:(a>b)?1:0; break; }
+    case FIELD_KERN_TM: { 
+        int a=time_conv(r->kern_tm);
+        int b=c->int_val;
+        if(a<b){
+            cmp=(-1);
+        }else if(a>b){
+            cmp=1;
+        }else{
+            cmp=0;
+        }break;
+    }
+    //case FIELD_FILE_TM: { int a=time_conv(r->file_tm),  b=time_conv(c->time_val); cmp=(a<b)?-1:(a>b)?1:0; break; }
+    case FIELD_FILE_TM: { 
+        int a=time_conv(r->file_tm);
+        int b=c->int_val;
+        if(a<b){
+            cmp=(-1);
+        }else if(a>b){
+            cmp=1;
+        }else{
+            cmp=0;
+        }break;
+    }
     case FIELD_STATUS:  cmp = (int)r->status - (int)c->status_val; break;
     case FIELD_NAME:    cmp = strcmp(r->name, c->str_val ? c->str_val : ""); break;
     default: return 0;
@@ -680,6 +707,30 @@ static char **split_tk_vgae(const char *line, int *out_count)
     return arr;
 }
 
+int cond_rang(const Condition *c){
+    if(c->field_idx==FIELD_PID&&c->op==OP_EQ){
+        return 0;
+    }
+    if(c->field_idx==FIELD_NAME){
+        return 3;
+    }
+    if(c->field_idx==FIELD_KERN_TM||c->field_idx==FIELD_FILE_TM){
+        return 2;
+    }
+    return 1;
+}
+void cond_order(Condition *conds,int count){
+    for(int i=1;i<count;i++){
+        Condition value=conds[i];
+        int rang=cond_rang(&value);
+        int j=i;
+        while(j>0&&cond_rang(&conds[j-1])>rang){
+            conds[j]=conds[j-1];
+            j--;
+        }
+    conds[j]=value;
+    }
+}
 // parse conditions from tk[start..ntok-1]
 static int parse_conditions(char **tk_vgae, int start, int ntok,
                             Condition **out_conds, int *out_nconds)
@@ -699,6 +750,7 @@ static int parse_conditions(char **tk_vgae, int start, int ntok,
         }
         parsed++;
     }
+    cond_order(conds,parsed);
     *out_conds  = conds;
     *out_nconds = parsed;
     return 1;
@@ -818,8 +870,11 @@ static int cmd_select(DB *db, char **tk_vgae, int ntok)
     if (!parse_conditions(tk_vgae, 2, ntok, &conds, &nconds)) return 0;
 
     //сканируем
-    int found = 0;
+    
     //КТ|0
+    
+    int found = 0;
+    /*
     for (lin_obj *n = db->head; n; n = n->next)
         if (re2cord_matches(&n->rec, conds, nconds)) found++;
 
@@ -836,6 +891,38 @@ static int cmd_select(DB *db, char **tk_vgae, int ntok)
         out("\n");
     }
 
+    free_conditions(conds, nconds);
+    return 1;*/
+    lin_obj **matches=NULL;
+    if(db->count>0){
+        matches=malloc((size_t)db->count*sizeof(*matches));
+        if(!matches){
+            free_conditions(conds,nconds);
+            return 0;
+        }
+    }
+    for(lin_obj *n=db->head;n;n=n->next){
+        //static int re2cord_matches(const re2cord *r, Condition *conds, int nconds)
+        /*for (lin_obj *n = db->head; n; n = n->next)
+        if (re2cord_matches(&n->rec, conds, nconds)) found++; */
+        if(re2cord_matches(&n->rec,conds,nconds)){
+            matches[found]=n;
+            found++;
+        }
+    }
+    out("select: %d\n", found);
+    for(int f=0;f<found;f++){
+        lin_obj *n=matches[f];
+        for(int i=0;i<nreq;i++){
+            if(i>0){
+                out(" ");
+            }
+            out("%s=", FIELD_NAMES[req_fields[i]]);
+            out_field(&n->rec, req_fields[i]);
+        }
+        out("\n");
+    }
+    free(matches);
     free_conditions(conds, nconds);
     return 1;
 }
