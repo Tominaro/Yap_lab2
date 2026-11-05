@@ -1042,40 +1042,180 @@ static int cmd_update(DB *db, char **tk_vgae, int ntok)
 }
 //uniq
 
+unsigned long long hash(unsigned long long h, void *data, size_t size){
+    /*constexpr uint64_t fnv1(uint64_t h, const char* s)
+      {
+        return (*s == 0) ? h :
+          fnv1((h * 1099511628211ull) ^ static_cast<uint64_t>(*s), s+1);
+      }
+      constexpr uint64_t fnv1a(uint64_t h, const char* s)
+      {
+        return (*s == 0) ? h :
+          fnv1a((h ^ static_cast<uint64_t>(*s)) * 1099511628211ull, s+1);
+      }
+    }creds to https://github.com/elbeno/constexpr/blob/master/src/include/cx_fnv1.h
+  }*/
+    unsigned char *bytes=data;
+    for(size_t i=0;i<size;i++){
+        h^=bytes[i];
+        h*=1099511628211ULL;
+    }
+    return h;
+}
+/*
+  constexpr uint64_t fnv1(const char* s)
+  {
+    return true ?
+      detail::fnv::fnv1(14695981039346656037ull, s) :
+      throw err::fnv1_runtime_error;
+  }
+  constexpr uint64_t fnv1a(const char* s)
+  {
+    return true ?
+      detail::fnv::fnv1a(14695981039346656037ull, s) :
+      throw err::fnv1a_runtime_error;
+  }creds to https://github.com/elbeno/constexpr/blob/master/src/include/cx_fnv1.h
+}
+*/
+unsigned long long rec_hash(re2cord *r,int *fields,int count){
+    unsigned long long h=14695981039346656037ull;
+    for(int i=0;i<count;i++){
+        int value=0;
+        switch(fields[i]){
+            case FIELD_NAME:
+            h=hash(h,r->name,strlen(r->name));
+            continue;
+            case FIELD_CPU_USAGE:{
+                double value_double=r->cpu_usage;
+                if(value_double==0.0){
+                    value_double=0;//v sluchae esli - cm https://github.com/elbeno/constexpr
+                }
+                h=hash(h,&value_double,sizeof(value_double));
+                continue;
+            }
+            case FIELD_PID:
+            value=r->pid;
+            break;
+            case FIELD_PRIORITY:
+            value=r->priority;
+            break;
+            case FIELD_KERN_TM:
+            value=time_conv(r->kern_tm);
+            break;
+            case FIELD_FILE_TM:
+            value=time_conv(r->file_tm);
+            break;
+            case FIELD_STATUS:
+            value=(int)r->status;
+            break;
+        }
+        h=hash(h,&value,sizeof(value));
+    }
+    return h;
+}
+int key_match(re2cord *a,re2cord *b,int *fields, int count){
+    for(int i=0;i<count;i++){
+        switch(fields[i]){
+            case FIELD_PID:
+            if(a->pid!=b->pid){ 
+                return 0;
+            }
+            break;
+            case FIELD_NAME:
+            if(strcmp(a->name,b->name)!= 0){
+                return 0;
+            }
+            break;
+            case FIELD_PRIORITY:
+            if(a->priority!=b->priority){
+                return 0;
+            }
+            break;
+            case FIELD_KERN_TM:
+            if(time_conv(a->kern_tm)!=time_conv(b->kern_tm)){
+                return 0;
+            }
+            break;
+            case FIELD_FILE_TM:
+            if(time_conv(a->file_tm)!=time_conv(b->file_tm)){
+                return 0;
+            }
+            break;
+            case FIELD_CPU_USAGE:
+            if(a->cpu_usage!= b->cpu_usage){
+                return 0;
+            }
+            break;
+            case FIELD_STATUS:
+            if(a->status!=b->status){
+                return 0;
+            }
+            break;
+            default:
+            return 0;
+        }
+    }
+    return 1;
+}
+size_t key_slot(lin_obj **table,size_t capacity,lin_obj *node,int *fields,int count){
+    size_t slot=rec_hash(&node->rec,fields, count)%capacity;
+    while(table[slot]!=NULL){
+        if(table[slot]==node||key_match(&table[slot]->rec,&node->rec,fields,count)){
+            break;
+        }
+        slot=(slot+1)%capacity;
+    }
+    return slot;
+}
+
+
 static int cmd_uniq(DB *db, char **tk_vgae, int ntok)
 {
-    int counter_aqt=0;
+    //int counter_aqt=0;
     if (ntok < 2) return 0;
-
+    
     char *flist_buf = str_dup(tk_vgae[1]);
     if (!flist_buf) return 0;
-
+    
     int key_fields[NUM_FIELDS];
     int nkeys = 0;
     char *save = NULL;
     char *tok = strtok_r(flist_buf, ",", &save);
-    int ok = 1;
-    while (tok && ok) {
-        tok = str_srez(tok);
+    //int ok = 1;
+    while(tok){
         int fi = field_index(tok);
-        if (fi < 0) { ok = 0; break; }
+        if (fi < 0) { 
+            //ok = 0; break; 
+            MFREE(flist_buf);
+            return 0;
+            }
         key_fields[nkeys++] = fi;
         tok = strtok_r(NULL, ",", &save);
     }
     MFREE(flist_buf);
-    if (!ok || nkeys == 0) return 0;
-
+    if (nkeys == 0) return 0;
+    size_t capacity=(size_t)db->count*2+1;
     /*
      * отдел€ем голову от хвоста... также провер€юю
      * отдельную €чейку на повторени€. если есть то удал€ю дупликат
      * ближайшую к концу
      */
-    int removed = 0;
-    lin_obj *prev = NULL, *cur = db->head;
+    //int removed = 0;
+    lin_obj **table=CALLOCA(capacity,sizeof(*table));
+    if(!table){
+        return 0;
+    }
+    for(lin_obj *node=db->head;node;node=node->next){
+        size_t slot=key_slot(table,capacity,node,key_fields,nkeys);
+        table[slot]=node;
+    }
+    int removed=0;
+    lin_obj *prev=NULL;
+    lin_obj *cur=db->head;
     while (cur) {
         // проверить есть ли еще схожие после текущей
-        int is_dup = 0;
-        for (lin_obj *later = cur->next; later; later = later->next) {
+        //int is_dup = 0;
+        /*for (lin_obj *later = cur->next; later; later = later->next) {
             int same = 1;
             for (int k = 0; k < nkeys && same; k++) {
                 int fi = key_fields[k];
@@ -1092,16 +1232,25 @@ static int cmd_uniq(DB *db, char **tk_vgae, int ntok)
                 }
             }
             if (same) { is_dup = 1; break; }
-        }
-        if (is_dup) {
+        }*/
+        /*if (is_dup) {
             cur = db_remove_lin_obj(db, prev, cur);
             removed++;
         } else {
             prev = cur;
             cur  = cur->next;
+        }*/
+        size_t slot=key_slot(table,capacity,cur,key_fields,nkeys);
+        if(table[slot]!=cur){
+            cur=db_remove_lin_obj(db,prev,cur);
+            removed++;
+        }else{
+            prev=cur;
+            cur=cur->next;
         }
     }
-    printf("\n--%d\n",counter_aqt);
+    //printf("\n--%d\n",counter_aqt);
+    MFREE(table);
     out("uniq: %d\n", removed);
     return 1;
 }
